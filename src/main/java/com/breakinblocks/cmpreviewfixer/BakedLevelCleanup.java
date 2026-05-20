@@ -1,5 +1,6 @@
 package com.breakinblocks.cmpreviewfixer;
 
+import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.VertexBuffer;
 import net.minecraft.client.renderer.SectionBufferBuilderPack;
@@ -9,52 +10,50 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.Map;
 
-/**
- * Reflective disposer for Gander's BakedLevel / SpatialRenderer graph.
- *
- * Gander allocates a SectionBufferBuilderPack pair (~10-20 MB of off-heap
- * SectionBufferBuilder buffers) and a VertexBuffer per RenderType for every
- * section of the previewed room, but never releases them. With a 45 cubed
- * room that adds up to several hundred megabytes of committed native memory
- * per preview open, accumulating until the JVM is OOM-killed.
- *
- * We can't depend on Gander at compile time (only on a credentialed Maven),
- * so the cleanup walks the record accessors by name. VertexBuffer.close()
- * must run on the render thread.
- */
 public final class BakedLevelCleanup {
     private static final Logger LOG = CMPreviewFixer.LOG;
 
     private static final String F_RENDERER = "renderer";
     private static final String F_BAKED_LEVEL = "bakedLevel";
+    private static final String F_STATE = "state";
+    private static final String F_PROPERTIES = "properties";
+    private static final String F_INTERMEDIARY_COPY_TARGET = "intermediaryCopyTarget";
     private static final String M_SECTIONS = "sections";
     private static final String M_BLOCK_BUFFERS = "blockBuffers";
     private static final String M_FLUID_BUFFERS = "fluidBuffers";
     private static final String M_BLOCK_BUILDERS = "blockBuilders";
     private static final String M_FLUID_BUILDERS = "fluidBuilders";
 
+    private static final String CLS_TRANSLUCENCY_CHAIN = "dev.compactmods.gander.render.translucency.TranslucencyChain";
+    private static final String CLS_RENDER_TYPE_STORE = "dev.compactmods.gander.render.rendertypes.RenderTypeStore";
+
     private BakedLevelCleanup() {}
 
-    /**
-     * Read the SpatialRenderer field on a MachineRoomScreen and dispose its
-     * BakedLevel. Safe to call multiple times — null renderers and missing
-     * fields are silently skipped.
-     */
     public static void disposeScreenRenderer(Object screen) {
         if (screen == null) return;
         Object renderer = readField(screen, F_RENDERER);
         if (renderer == null) return;
         Object bakedLevel = readField(renderer, F_BAKED_LEVEL);
-        if (bakedLevel == null) return;
-        scheduleDispose(bakedLevel);
+        Object pipelineState = readField(renderer, F_STATE);
+        if (bakedLevel == null && pipelineState == null) return;
+        scheduleDispose(bakedLevel, pipelineState);
     }
 
-    private static void scheduleDispose(Object bakedLevel) {
+    private static void scheduleDispose(Object bakedLevel, Object pipelineState) {
         Runnable task = () -> {
-            try {
-                disposeBakedLevel(bakedLevel);
-            } catch (Throwable t) {
-                LOG.warn("CMPreviewFixer: failed to dispose BakedLevel", t);
+            if (bakedLevel != null) {
+                try {
+                    disposeBakedLevel(bakedLevel);
+                } catch (Throwable t) {
+                    LOG.warn("CMPreviewFixer: failed to dispose BakedLevel", t);
+                }
+            }
+            if (pipelineState != null) {
+                try {
+                    disposePipelineState(pipelineState);
+                } catch (Throwable t) {
+                    LOG.warn("CMPreviewFixer: failed to dispose PipelineState", t);
+                }
             }
         };
         if (RenderSystem.isOnRenderThread()) {
@@ -72,6 +71,49 @@ public final class BakedLevelCleanup {
             closeBuffers(invokeNoArg(section, M_FLUID_BUFFERS));
             closePack(invokeNoArg(section, M_BLOCK_BUILDERS));
             closePack(invokeNoArg(section, M_FLUID_BUILDERS));
+        }
+    }
+
+    private static void disposePipelineState(Object pipelineState) {
+        Object propertiesObj = readField(pipelineState, F_PROPERTIES);
+        if (!(propertiesObj instanceof Map<?, ?> properties)) return;
+        for (Object value : properties.values()) {
+            disposeStateValue(value);
+        }
+        try {
+            Method clear = findMethod(pipelineState.getClass(), "clear");
+            if (clear != null) clear.invoke(pipelineState);
+        } catch (ReflectiveOperationException ignored) {
+        }
+    }
+
+    private static void disposeStateValue(Object value) {
+        if (value == null) return;
+        if (value instanceof RenderTarget rt) {
+            try {
+                rt.destroyBuffers();
+            } catch (Throwable ignored) {
+            }
+            return;
+        }
+        String cls = value.getClass().getName();
+        if (cls.equals(CLS_TRANSLUCENCY_CHAIN)) {
+            // TranslucencyChain.close() leaves intermediaryCopyTarget allocated.
+            Object intermediary = readField(value, F_INTERMEDIARY_COPY_TARGET);
+            if (intermediary instanceof RenderTarget rt) {
+                try {
+                    rt.destroyBuffers();
+                } catch (Throwable ignored) {
+                }
+            }
+            if (value instanceof AutoCloseable ac) {
+                try {
+                    ac.close();
+                } catch (Throwable ignored) {
+                }
+            }
+        } else if (cls.equals(CLS_RENDER_TYPE_STORE)) {
+            invokeNoArg(value, "dispose");
         }
     }
 

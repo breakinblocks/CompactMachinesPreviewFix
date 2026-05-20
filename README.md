@@ -11,29 +11,43 @@ Repo: <https://github.com/breakinblocks/CompactMachinesPreviewFix>
 
 Compact Machines uses the [Gander](https://github.com/CompactMods/gander)
 library to render a 3D preview of the inside of a room. Each preview open
-allocates, per chunk section:
+leaks in two places:
 
-* 2 × `SectionBufferBuilderPack` — pre-sized off-heap `ByteBufferBuilder`s
+**Per-chunk-section geometry** (off-heap RAM)
+
+* 2 × `SectionBufferBuilderPack` — pre-sized `ByteBufferBuilder`s
   (~10–20 MB each)
-* 1 × `VertexBuffer` per `RenderType` — OpenGL buffer handle + native staging
+* 1 × `VertexBuffer` per `RenderType` — OpenGL buffer handle + native
+  staging
 
-Neither `BakedLevel`, `BakedLevelSection`, nor `SpatialRenderer` exposes a
-`close()` / `dispose()` method, and the consuming code in
-`MachineRoomScreen` does not call one. A 45 cubed room (≈27 sections) leaks
-roughly 270–540 MB of off-heap committed memory **per preview open**.
+**Per-preview screen pipeline** (VRAM)
+
+`SpatialRenderer.state` caches a `PipelineState` containing:
+
+* `RENDER_TARGET` — a full-window `TextureTarget` (color + depth)
+* `TRANSLUCENCY_CHAIN` — owns a layered texture-array `TranslucentRenderTarget`
+  **and** a separate `intermediaryCopyTarget` FBO that `close()` does not
+  destroy
+* `RENDER_TYPE_STORE` — cached `RenderType` remap maps
+
+Neither `BakedLevel`/`BakedLevelSection` nor the `SpatialRenderer.state`
+graph is disposed by Gander, and `MachineRoomScreen` drops the renderer
+without notice. A 45-cubed room (~27 sections) at 2560×1440 leaks several
+hundred MB of off-heap RAM **plus** tens of MB of VRAM per preview open.
 JVM heap stays small (everything is off-heap / GL), which is why heap
-profilers look fine while `htop` / Windows committed memory balloons until
-the game OOM-crashes.
+profilers look fine while committed RAM balloons until the JVM OOM-crashes
+— and once VRAM fills the next render aborts with
+`GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT` from `TranslucentRenderTarget`.
 
 This mod injects into `MachineRoomScreen` via Mixin to:
 
-1. Dispose the prior `BakedLevel` (close each `VertexBuffer` and each
-   `SectionBufferBuilderPack`) **before** `updateScene` replaces the
-   renderer.
-2. Dispose the current `BakedLevel` **before** `onClose` runs.
+1. Walk the prior `SpatialRenderer` (its `BakedLevel` geometry **and** its
+   cached `PipelineState`) and release every closeable GPU/native handle
+   **before** `updateScene` replaces the renderer.
+2. Do the same cleanup **before** `onClose` runs.
 
-All `close()` calls are routed onto the render thread via
-`RenderSystem.recordRenderCall`.
+All `close()` / `destroyBuffers()` calls are routed onto the render thread
+via `RenderSystem.recordRenderCall`.
 
 ## Compatibility
 
