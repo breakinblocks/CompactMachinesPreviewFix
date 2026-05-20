@@ -1,0 +1,38 @@
+modLoader = "javafml"
+loaderVersion = "[${neoforge_loader_version},)"
+license = "MIT"
+issueTrackerURL = "https://github.com/breakinblocks/CompactMachinesPreviewFix/issues"
+
+[[mods]]
+modId = "${mod_id}"
+version = "${version}"
+displayName = "Compact Machines Preview Fixer"
+authors = "${mod_author}"
+description = '''
+Releases the native and GPU memory that Compact Machines' room preview leaks via Gander's BakedLevel / SpatialRenderer.
+
+Each preview open allocates 270 MB+ of off-heap SectionBufferBuilderPack data and VertexBuffers that are never released. This mod hooks MachineRoomScreen.updateScene and MachineRoomScreen.onClose to dispose the prior BakedLevel cleanly on the render thread.
+'''
+
+[[dependencies.${mod_id}]]
+modId = "neoforge"
+type = "required"
+versionRange = "${neo_version_range}"
+ordering = "NONE"
+side = "CLIENT"
+
+[[dependencies.${mod_id}]]
+modId = "minecraft"
+type = "required"
+versionRange = "[${minecraft_version},)"
+ordering = "NONE"
+side = "CLIENT"
+
+[[dependencies.${mod_id}]]
+modId = "compactmachines"
+type = "optional"
+ordering = "AFTER"
+side = "CLIENT"
+
+[[mixins]]
+config = "cmpreviewfixer.mixins.json"

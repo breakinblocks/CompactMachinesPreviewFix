@@ -1,0 +1,21 @@
+.gradle/
+build/
+out/
+run/
+runs/
+.idea/
+*.iml
+.classpath
+.project
+.settings/
+bin/
+eclipse/
+*.bak
+*.log
+
+# Ignore all markdown by default; selectively allow the ones we want tracked.
+*.md
+*.MD
+!README.md
+!LICENSE.md
+!metadata/changelogs/*.md

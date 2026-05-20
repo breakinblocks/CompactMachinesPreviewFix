@@ -1,0 +1,92 @@
+plugins {
+    id 'java-library'
+    id 'eclipse'
+    id 'idea'
+    id 'net.neoforged.gradle.userdev' version '7.0.145'
+}
+
+def mcBase = getMinecraftBaseVersion()
+
+version = "${mcBase}-${project.mod_version}"
+group = project.mod_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+runs {
+    configureEach {
+        systemProperty 'forge.logging.markers', 'REGISTRIES'
+        systemProperty 'forge.logging.console.level', 'debug'
+        modSource project.sourceSets.main
+    }
+
+    client {
+        systemProperty 'forge.enabledGameTestNamespaces', project.mod_id
+    }
+}
+
+configurations {
+    runtimeClasspath.extendsFrom localRuntime
+}
+
+repositories {
+    mavenLocal()
+}
+
+dependencies {
+    implementation "net.neoforged:neoforge:${neoforge_full_version}"
+}
+
+tasks.withType(ProcessResources).configureEach {
+    var replaceProperties = [
+            minecraft_version      : minecraft_version,
+            neoforge_loader_version: neoforge_loader_version,
+            neoforge_full_version  : neoforge_full_version,
+            version                : version,
+            neo_version_range      : neo_version_range,
+            mod_id                 : mod_id,
+            mod_author             : mod_author
+    ]
+
+    inputs.properties replaceProperties
+
+    filesMatching(['META-INF/neoforge.mods.toml']) {
+        expand replaceProperties
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = "UTF-8"
+}
+
+jar {
+    manifest {
+        attributes([
+                'Specification-Title'   : mod_id,
+                'Specification-Version' : project.version,
+                'Implementation-Title'  : mod_id,
+                'Implementation-Version': project.version,
+                'MixinConfigs'          : 'cmpreviewfixer.mixins.json'
+        ])
+    }
+}
+
+idea {
+    module {
+        downloadSources = true
+        downloadJavadoc = true
+    }
+}
+
+/**
+ * Removes the leading "1." from the Minecraft version (1.21.1 -> 21.1).
+ */
+def getMinecraftBaseVersion() {
+    def parts = ((String) project.minecraft_version).split("\\.")
+    parts = parts[1..-1]
+    if (parts.size() < 2) parts << "0"
+    return parts.join(".")
+}
